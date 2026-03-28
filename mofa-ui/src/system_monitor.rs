@@ -13,6 +13,18 @@ use std::thread;
 use std::time::Duration;
 use sysinfo::System;
 
+const USAGE_SCALE_MAX: u32 = 10_000;
+
+/// One read-consistent snapshot of monitor values.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemSnapshot {
+    pub cpu_usage: f64,
+    pub memory_usage: f64,
+    pub gpu_usage: f64,
+    pub vram_usage: f64,
+    pub gpu_available: bool,
+}
+
 /// Shared system stats, updated by background thread
 struct SystemStats {
     /// CPU usage scaled to 0-10000 (representing 0.00% to 100.00%)
@@ -37,6 +49,19 @@ impl SystemStats {
             gpu_available: AtomicBool::new(false),
         }
     }
+}
+
+#[inline]
+fn scale_percentage_to_u32(pct: f64) -> u32 {
+    if !pct.is_finite() {
+        return 0;
+    }
+    pct.clamp(0.0, 100.0).mul_add(100.0, 0.0).round() as u32
+}
+
+#[inline]
+fn normalize_scaled_usage(value: u32) -> f64 {
+    value as f64 / USAGE_SCALE_MAX as f64
 }
 
 /// Global system monitor instance
@@ -212,14 +237,14 @@ pub fn start_system_monitor() {
 
                     // Get CPU usage (0.0 - 100.0)
                     let cpu = sys.global_cpu_usage();
-                    let cpu_scaled = (cpu * 100.0) as u32; // Scale to 0-10000
+                    let cpu_scaled = scale_percentage_to_u32(cpu);
                     stats_clone.cpu_usage.store(cpu_scaled, Ordering::Relaxed);
 
                     // Get memory usage
                     let total_memory = sys.total_memory();
                     let used_memory = sys.used_memory();
                     let memory_pct = if total_memory > 0 {
-                        (used_memory as f64 / total_memory as f64 * 10000.0) as u32
+                        scale_percentage_to_u32(used_memory as f64 / total_memory as f64 * 100.0)
                     } else {
                         0
                     };
@@ -234,14 +259,14 @@ pub fn start_system_monitor() {
 
                         // GPU utilization
                         if let Some(util) = gpu_stats.gpu_utilization {
-                            let gpu_pct = (util * 10000.0) as u32;
+                            let gpu_pct = scale_percentage_to_u32(util * 100.0);
                             stats_clone.gpu_usage.store(gpu_pct, Ordering::Relaxed);
                         }
 
                         // VRAM usage
                         if let (Some(used), Some(total)) = (gpu_stats.vram_used_mb, gpu_stats.vram_total_mb) {
                             if total > 0 {
-                                let vram_pct = ((used as f64 / total as f64) * 10000.0) as u32;
+                                let vram_pct = scale_percentage_to_u32((used as f64 / total as f64) * 100.0);
                                 stats_clone.vram_usage.store(vram_pct, Ordering::Relaxed);
                             }
                         }
@@ -261,7 +286,7 @@ pub fn start_system_monitor() {
 pub fn get_cpu_usage() -> f64 {
     SYSTEM_MONITOR
         .get()
-        .map(|stats| stats.cpu_usage.load(Ordering::Relaxed) as f64 / 10000.0)
+        .map(|stats| normalize_scaled_usage(stats.cpu_usage.load(Ordering::Relaxed)))
         .unwrap_or(0.0)
 }
 
@@ -269,7 +294,7 @@ pub fn get_cpu_usage() -> f64 {
 pub fn get_memory_usage() -> f64 {
     SYSTEM_MONITOR
         .get()
-        .map(|stats| stats.memory_usage.load(Ordering::Relaxed) as f64 / 10000.0)
+        .map(|stats| normalize_scaled_usage(stats.memory_usage.load(Ordering::Relaxed)))
         .unwrap_or(0.0)
 }
 
@@ -278,7 +303,7 @@ pub fn get_memory_usage() -> f64 {
 pub fn get_gpu_usage() -> f64 {
     SYSTEM_MONITOR
         .get()
-        .map(|stats| stats.gpu_usage.load(Ordering::Relaxed) as f64 / 10000.0)
+        .map(|stats| normalize_scaled_usage(stats.gpu_usage.load(Ordering::Relaxed)))
         .unwrap_or(0.0)
 }
 
@@ -287,7 +312,7 @@ pub fn get_gpu_usage() -> f64 {
 pub fn get_vram_usage() -> f64 {
     SYSTEM_MONITOR
         .get()
-        .map(|stats| stats.vram_usage.load(Ordering::Relaxed) as f64 / 10000.0)
+        .map(|stats| normalize_scaled_usage(stats.vram_usage.load(Ordering::Relaxed)))
         .unwrap_or(0.0)
 }
 
@@ -297,4 +322,39 @@ pub fn is_gpu_available() -> bool {
         .get()
         .map(|stats| stats.gpu_available.load(Ordering::Relaxed))
         .unwrap_or(false)
+}
+
+/// Get a single snapshot of all system monitor values.
+///
+/// This avoids mixed reads across different monitor ticks in UI code.
+pub fn get_system_snapshot() -> SystemSnapshot {
+    SYSTEM_MONITOR
+        .get()
+        .map(|stats| SystemSnapshot {
+            cpu_usage: normalize_scaled_usage(stats.cpu_usage.load(Ordering::Relaxed)),
+            memory_usage: normalize_scaled_usage(stats.memory_usage.load(Ordering::Relaxed)),
+            gpu_usage: normalize_scaled_usage(stats.gpu_usage.load(Ordering::Relaxed)),
+            vram_usage: normalize_scaled_usage(stats.vram_usage.load(Ordering::Relaxed)),
+            gpu_available: stats.gpu_available.load(Ordering::Relaxed),
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_scaled_usage, scale_percentage_to_u32};
+
+    #[test]
+    fn scale_percentage_clamps_invalid_values() {
+        assert_eq!(scale_percentage_to_u32(f64::NAN), 0);
+        assert_eq!(scale_percentage_to_u32(-12.0), 0);
+        assert_eq!(scale_percentage_to_u32(120.0), 10_000);
+    }
+
+    #[test]
+    fn normalize_scaled_usage_works() {
+        assert_eq!(normalize_scaled_usage(0), 0.0);
+        assert_eq!(normalize_scaled_usage(5_000), 0.5);
+        assert_eq!(normalize_scaled_usage(10_000), 1.0);
+    }
 }

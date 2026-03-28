@@ -576,18 +576,14 @@ impl Widget for MofaHero {
 impl MofaHero {
     /// Update system stats from background monitor
     fn update_system_stats(&mut self, cx: &mut Cx) {
-        // Read values from background system monitor
-        let cpu_usage = system_monitor::get_cpu_usage();
-        let memory_usage = system_monitor::get_memory_usage();
-        let gpu_usage = system_monitor::get_gpu_usage();
-        let vram_usage = system_monitor::get_vram_usage();
-        let gpu_available = system_monitor::is_gpu_available();
+        // Read one snapshot from the background monitor to avoid mixed-tick values.
+        let snapshot = system_monitor::get_system_snapshot();
 
         // Update UI with the values
-        self.set_cpu_usage_internal(cx, cpu_usage);
-        self.set_memory_usage_internal(cx, memory_usage);
-        self.set_gpu_usage_internal(cx, gpu_usage, gpu_available);
-        self.set_vram_usage_internal(cx, vram_usage, gpu_available);
+        self.set_cpu_usage_internal(cx, snapshot.cpu_usage);
+        self.set_memory_usage_internal(cx, snapshot.memory_usage);
+        self.set_gpu_usage_internal(cx, snapshot.gpu_usage, snapshot.gpu_available);
+        self.set_vram_usage_internal(cx, snapshot.vram_usage, snapshot.gpu_available);
     }
 
     /// Set the running state (shows start or stop view - matches conference-dashboard)
@@ -973,4 +969,3 @@ impl MofaHeroRef {
         }
     }
 }
-
