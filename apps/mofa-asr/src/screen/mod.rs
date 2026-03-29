@@ -486,7 +486,14 @@ impl MoFaASRScreen {
             let mut guard = match controller.lock() {
                 Ok(g) => g,
                 Err(poisoned) => {
+            let mut guard = match controller.lock() {
+                Ok(g) => g,
+                Err(poisoned) => {
                     ::log::warn!("ChatController mutex poisoned; recovering inner state");
+                    poisoned.into_inner()
+                }
+            };
+            guardvering inner state");
                     poisoned.into_inner()
                 }
             };
